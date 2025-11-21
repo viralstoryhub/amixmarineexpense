@@ -86,7 +86,8 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ onViewItem }) => {
         // Try to find project ID from invoice data or user input
         // For this demo, we'll assume 'projectNumber' is the key
         const proj = (item.data as any).projectNumber || 'Unknown';
-        spendByProject[proj] = (spendByProject[proj] || 0) + (item.data.totalAmount || 0);
+        const amount = (item.data as any).totalAmount || (item.data as any).grandTotal || 0;
+        spendByProject[proj] = (spendByProject[proj] || 0) + amount;
     });
 
     // Merge spend into budgets for display
@@ -186,7 +187,7 @@ const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ onViewItem }) => {
                                                 {(item.data as any).vendorName || (item.data as any).merchantName}
                                             </td>
                                             <td className="px-6 py-4 font-bold text-slate-900">
-                                                ${item.data.totalAmount.toFixed(2)}
+                                                ${((item.data as any).totalAmount || (item.data as any).grandTotal || 0).toFixed(2)}
                                             </td>
                                             <td className="px-6 py-4">
                                                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.data.type === 'invoice' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'}`}>

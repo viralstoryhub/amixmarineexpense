@@ -158,6 +158,9 @@ export const extractReceiptData = async (base64Data: string, mimeType: string): 
     2. **Line Item Extraction**: 
        - Look at the body of the receipt between the header and the subtotal.
        - Create a separate line item for EVERY product or service listed.
+       - **DO NOT GROUP ITEMS**. If there are 5 beers, list them as 5 separate lines or 1 line with quantity 5, but do not group different items.
+       - **EXTRACT EVERYTHING**: Even if there are 20 items, extract all 20.
+       - **SKU/Codes**: If a product code or SKU is visible, include it in the description (e.g., "12345 - Widget").
        - Extract the exact price and description.
     3. **Tax Handling**: 
        - If you see lines like "GST", "PST", "HST", or "Tax", extract them as separate line items but mark 'isTaxLine' as true.
