@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { StorageService } from '../services/storageService';
-import { HistoryItem } from '../types';
+import { ExcelService } from '../services/excelService';
+import { HistoryItem, ProjectBudget } from '../types';
 import { Icons } from '../constants';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
 
@@ -8,349 +9,358 @@ interface ManagerDashboardProps {
     onViewItem: (item: HistoryItem) => void;
 }
 
-const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
-
 const ManagerDashboard: React.FC<ManagerDashboardProps> = ({ onViewItem }) => {
-    const [history, setHistory] = useState<HistoryItem[]>([]);
-    const [activeTab, setActiveTab] = useState<'queue' | 'analytics'>('queue');
-    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [activeTab, setActiveTab] = useState<'approvals' | 'analytics' | 'budgets'>('approvals');
+    const [items, setItems] = useState<HistoryItem[]>([]);
+    const [budgets, setBudgets] = useState<ProjectBudget[]>([]);
+    const [newBudgetProject, setNewBudgetProject] = useState('');
+    const [newBudgetAmount, setNewBudgetAmount] = useState('');
 
     useEffect(() => {
-        setHistory(StorageService.getHistory());
+        loadData();
     }, []);
 
-    const pendingItems = history.filter(item => item.status === 'Pending');
+    const loadData = () => {
+        const allItems = StorageService.getHistory();
+        setItems(allItems);
 
-    const handleAction = (e: React.MouseEvent, id: string, action: 'Approved' | 'Rejected') => {
-        e.stopPropagation();
-        StorageService.updateStatus(id, action);
-        setHistory(prev => prev.map(item => item.id === id ? { ...item, status: action } : item));
-        const newSelected = new Set(selectedIds);
-        newSelected.delete(id);
-        setSelectedIds(newSelected);
-    };
-
-    const handleBulkAction = (action: 'Approved' | 'Rejected') => {
-        if (selectedIds.size === 0) return;
-
-        const ids = Array.from(selectedIds) as string[];
-        ids.forEach(id => {
-            StorageService.updateStatus(id, action);
-        });
-
-        setHistory(prev => prev.map(item => ids.includes(item.id) ? { ...item, status: action } : item));
-        setSelectedIds(new Set());
-        alert(`Successfully ${action.toLowerCase()} ${ids.length} items.`);
-    };
-
-    const toggleSelection = (id: string) => {
-        const newSelected = new Set(selectedIds);
-        if (newSelected.has(id)) {
-            newSelected.delete(id);
+        // Load budgets (mocked for now, or stored in localStorage if we had a service for it)
+        const savedBudgets = localStorage.getItem('amix_project_budgets');
+        if (savedBudgets) {
+            setBudgets(JSON.parse(savedBudgets));
         } else {
-            newSelected.add(id);
-        }
-        setSelectedIds(newSelected);
-    };
-
-    const toggleSelectAll = () => {
-        if (selectedIds.size === pendingItems.length) {
-            setSelectedIds(new Set());
-        } else {
-            setSelectedIds(new Set(pendingItems.map(i => i.id)));
+            // Default mock budgets
+            setBudgets([
+                { projectId: 'P-1001', budgetAmount: 50000, spentAmount: 0 },
+                { projectId: 'P-2023-05', budgetAmount: 15000, spentAmount: 0 }
+            ]);
         }
     };
 
-    const pendingTotal = pendingItems.reduce((acc, item) => {
-        const amt = item.data.type === 'invoice' ? item.data.grandTotal : item.data.totalAmount;
-        return acc + (amt || 0);
-    }, 0);
+    const handleStatusUpdate = (id: string, newStatus: 'Approved' | 'Rejected') => {
+        StorageService.updateStatus(id, newStatus);
+        loadData(); // Refresh
+    };
 
-    // --- Analytics Calculations ---
-    const approvedItems = history.filter(item => item.status === 'Approved');
+    const handleAddBudget = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newBudgetProject || !newBudgetAmount) return;
 
-    // Project Spend
-    const spendByProject: Record<string, number> = {};
-    approvedItems.forEach(item => {
-        const project = item.data.projectNumber || 'Unassigned';
-        const amt = item.data.type === 'invoice' ? item.data.grandTotal : item.data.totalAmount;
-        spendByProject[project] = (spendByProject[project] || 0) + (amt || 0);
-    });
+        const newBudget: ProjectBudget = {
+            projectId: newBudgetProject,
+            budgetAmount: Number(newBudgetAmount),
+            spentAmount: 0
+        };
 
-    const maxProjectSpend = Math.max(...Object.values(spendByProject), 1);
-    const sortedProjects = Object.entries(spendByProject).sort((a, b) => b[1] - a[1]).slice(0, 5);
+        const updatedBudgets = [...budgets.filter(b => b.projectId !== newBudgetProject), newBudget];
+        setBudgets(updatedBudgets);
+        localStorage.setItem('amix_project_budgets', JSON.stringify(updatedBudgets));
+        setNewBudgetProject('');
+        setNewBudgetAmount('');
+    };
 
-    // Category Spend (Pie Chart)
+    // --- ANALYTICS DATA PREP ---
+    const approvedItems = items.filter(i => i.status === 'Approved');
+
+    // 1. Spend by Category (Cost Code)
     const spendByCategory: Record<string, number> = {};
     approvedItems.forEach(item => {
-        // Aggregate line items for more granular category data
-        const lines = item.data.lineItems || [];
-        lines.forEach(line => {
-            const cat = line.costCode || 'Uncategorized';
-            spendByCategory[cat] = (spendByCategory[cat] || 0) + (line.total || 0);
-        });
+        if (item.data.lineItems) {
+            item.data.lineItems.forEach(line => {
+                const code = line.costCode || 'Uncategorized';
+                spendByCategory[code] = (spendByCategory[code] || 0) + (line.total || 0);
+            });
+        }
     });
 
-    const pieData = Object.entries(spendByCategory)
-        .map(([name, value]) => ({ name, value }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 6); // Top 6 categories
+    const pieData = Object.keys(spendByCategory).map(key => ({
+        name: key,
+        value: Number(spendByCategory[key].toFixed(2))
+    }));
+
+    const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
+
+    // 2. Spend by Project (for Budgets)
+    const spendByProject: Record<string, number> = {};
+    approvedItems.forEach(item => {
+        // Try to find project ID from invoice data or user input
+        // For this demo, we'll assume 'projectNumber' is the key
+        const proj = (item.data as any).projectNumber || 'Unknown';
+        spendByProject[proj] = (spendByProject[proj] || 0) + (item.data.totalAmount || 0);
+    });
+
+    // Merge spend into budgets for display
+    const budgetDisplay = budgets.map(b => ({
+        ...b,
+        spentAmount: spendByProject[b.projectId] || 0,
+        percent: Math.min(100, Math.round(((spendByProject[b.projectId] || 0) / b.budgetAmount) * 100))
+    }));
+
+    const handleExportExcel = () => {
+        if (items.length === 0) return;
+        // Export all items (or could filter to just approved)
+        const exportData = items.map(i => i.data as any);
+        ExcelService.exportBatch(exportData);
+    };
+
+    const handleExportPDF = () => {
+        const approved = items.filter(i => i.status === 'Approved');
+        if (approved.length === 0) {
+            alert("No approved items to generate report for.");
+            return;
+        }
+        ExcelService.generatePdfReport(approved);
+    };
 
     return (
-        <div className="max-w-5xl mx-auto animate-fade-in pb-20">
-            {/* Header Stats */}
-            <div className="mb-8 flex flex-col md:flex-row justify-between items-start md:items-center">
-                <div>
-                    <h2 className="text-2xl font-bold text-slate-900">Manager Dashboard</h2>
-                    <p className="text-slate-500 mt-1">Review approvals and analyze project spend.</p>
-                </div>
-
-                {/* Tab Switcher */}
-                <div className="flex bg-white border border-slate-200 rounded-lg p-1 mt-4 md:mt-0">
+        <div className="space-y-6 animate-fade-in">
+            <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-slate-900">Manager Dashboard</h2>
+                <div className="flex gap-2">
                     <button
-                        onClick={() => setActiveTab('queue')}
-                        className={`px-4 py-2 text-sm font-medium rounded-md transition ${activeTab === 'queue' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                        onClick={handleExportPDF}
+                        className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-900 transition shadow-sm"
                     >
-                        Approval Queue
-                        {pendingItems.length > 0 && <span className="ml-2 bg-amix-orange text-white text-xs px-1.5 py-0.5 rounded-full">{pendingItems.length}</span>}
+                        <Icons.FileText className="w-4 h-4" />
+                        Export PDF Report
                     </button>
                     <button
-                        onClick={() => setActiveTab('analytics')}
-                        className={`px-4 py-2 text-sm font-medium rounded-md transition ${activeTab === 'analytics' ? 'bg-slate-100 text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+                        onClick={handleExportExcel}
+                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition shadow-sm"
                     >
-                        Spend Analytics
+                        <Icons.Download className="w-4 h-4" />
+                        Export Excel
                     </button>
                 </div>
             </div>
 
-            {activeTab === 'analytics' ? (
-                <div className="space-y-6">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        {/* Project Bar Chart */}
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                            <h3 className="text-lg font-bold text-slate-800 mb-6">Project Spend (Approved)</h3>
-                            {sortedProjects.length > 0 ? (
-                                <div className="space-y-4">
-                                    {sortedProjects.map(([project, amount]) => (
-                                        <div key={project}>
-                                            <div className="flex justify-between text-sm mb-1">
-                                                <span className="font-medium text-slate-700">{project}</span>
-                                                <span className="text-slate-900 font-bold">${amount.toLocaleString()}</span>
-                                            </div>
-                                            <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
-                                                <div
-                                                    className="h-full bg-amix-blue rounded-full transition-all duration-1000"
-                                                    style={{ width: `${(amount / maxProjectSpend) * 100}%` }}
-                                                ></div>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
+            <div className="flex bg-white rounded-lg p-1 shadow-sm border border-slate-200 w-fit">
+                <button
+                    onClick={() => setActiveTab('approvals')}
+                    className={`px-4 py-2 text-sm font-medium rounded-md transition ${activeTab === 'approvals' ? 'bg-amix-blue text-white shadow' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                    Approvals
+                </button>
+                <button
+                    onClick={() => setActiveTab('analytics')}
+                    className={`px-4 py-2 text-sm font-medium rounded-md transition ${activeTab === 'analytics' ? 'bg-amix-blue text-white shadow' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                    Spend Analytics
+                </button>
+                <button
+                    onClick={() => setActiveTab('budgets')}
+                    className={`px-4 py-2 text-sm font-medium rounded-md transition ${activeTab === 'budgets' ? 'bg-amix-blue text-white shadow' : 'text-slate-500 hover:bg-slate-50'}`}
+                >
+                    Project Budgets
+                </button>
+            </div>
+
+            {/* TAB: APPROVALS */}
+            {activeTab === 'approvals' && (
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left text-sm">
+                            <thead className="bg-slate-50 border-b border-slate-200">
+                                <tr>
+                                    <th className="px-6 py-4 font-semibold text-slate-700">Date</th>
+                                    <th className="px-6 py-4 font-semibold text-slate-700">Vendor / Merchant</th>
+                                    <th className="px-6 py-4 font-semibold text-slate-700">Total</th>
+                                    <th className="px-6 py-4 font-semibold text-slate-700">Type</th>
+                                    <th className="px-6 py-4 font-semibold text-slate-700">Risk</th>
+                                    <th className="px-6 py-4 font-semibold text-slate-700">Status</th>
+                                    <th className="px-6 py-4 font-semibold text-slate-700 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                                {items.filter(i => i.status === 'Pending').length === 0 ? (
+                                    <tr>
+                                        <td colSpan={7} className="px-6 py-12 text-center text-slate-400">
+                                            No pending items for approval.
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    items.filter(i => i.status === 'Pending').map(item => (
+                                        <tr key={item.id} className="hover:bg-slate-50 transition">
+                                            <td className="px-6 py-4 text-slate-600">{item.data.date}</td>
+                                            <td className="px-6 py-4 font-medium text-slate-900">
+                                                {(item.data as any).vendorName || (item.data as any).merchantName}
+                                            </td>
+                                            <td className="px-6 py-4 font-bold text-slate-900">
+                                                ${item.data.totalAmount.toFixed(2)}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${item.data.type === 'invoice' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'}`}>
+                                                    {item.data.type === 'invoice' ? 'Invoice' : 'Receipt'}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                {item.data.riskFlags && item.data.riskFlags.length > 0 ? (
+                                                    <div className="group relative flex items-center">
+                                                        <div className="w-6 h-6 bg-red-100 text-red-600 rounded-full flex items-center justify-center cursor-help">
+                                                            <Icons.AlertTriangle />
+                                                        </div>
+                                                        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 bg-slate-900 text-white text-xs rounded p-2 opacity-0 group-hover:opacity-100 transition pointer-events-none z-10">
+                                                            {item.data.riskFlags.join(', ')}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-emerald-500">
+                                                        <Icons.CheckCircle />
+                                                    </div>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                                    Pending
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 text-right space-x-2">
+                                                <button
+                                                    onClick={() => onViewItem(item)}
+                                                    className="text-slate-400 hover:text-amix-blue transition"
+                                                    title="View Details"
+                                                >
+                                                    <Icons.FileText />
+                                                </button>
+                                                <button
+                                                    onClick={() => handleStatusUpdate(item.id, 'Approved')}
+                                                    className="text-emerald-500 hover:text-emerald-700 transition"
+                                                    title="Approve"
+                                                >
+                                                    <Icons.CheckCircle />
+                                                </button>
+                                                <button
+                                                    onClick={() => handleStatusUpdate(item.id, 'Rejected')}
+                                                    className="text-red-400 hover:text-red-600 transition"
+                                                    title="Reject"
+                                                >
+                                                    <Icons.Trash />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            {/* TAB: ANALYTICS */}
+            {activeTab === 'analytics' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                        <h3 className="text-lg font-bold text-slate-900 mb-4">Spend by Category</h3>
+                        <div className="h-64 w-full">
+                            {pieData.length > 0 ? (
+                                <ResponsiveContainer width="100%" height="100%">
+                                    <PieChart>
+                                        <Pie
+                                            data={pieData}
+                                            cx="50%"
+                                            cy="50%"
+                                            labelLine={false}
+                                            outerRadius={80}
+                                            fill="#8884d8"
+                                            dataKey="value"
+                                        >
+                                            {pieData.map((entry, index) => (
+                                                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                            ))}
+                                        </Pie>
+                                        <Tooltip formatter={(value: number) => `$${value.toFixed(2)}`} />
+                                        <Legend />
+                                    </PieChart>
+                                </ResponsiveContainer>
                             ) : (
-                                <div className="text-center py-12 text-slate-400">
-                                    No approved invoices yet.
+                                <div className="h-full flex items-center justify-center text-slate-400">
+                                    No approved data yet.
                                 </div>
                             )}
                         </div>
-
-                        {/* Category Pie Chart */}
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 flex flex-col">
-                            <h3 className="text-lg font-bold text-slate-800 mb-2">Cost Code Breakdown</h3>
-                            <div className="flex-1 min-h-[300px]">
-                                {pieData.length > 0 ? (
-                                    <ResponsiveContainer width="100%" height="100%">
-                                        <PieChart>
-                                            <Pie
-                                                data={pieData}
-                                                cx="50%"
-                                                cy="50%"
-                                                labelLine={false}
-                                                outerRadius={100}
-                                                fill="#8884d8"
-                                                dataKey="value"
-                                            >
-                                                {pieData.map((entry, index) => (
-                                                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                                ))}
-                                            </Pie>
-                                            <Tooltip formatter={(value: number) => `$${value.toLocaleString()}`} />
-                                            <Legend />
-                                        </PieChart>
-                                    </ResponsiveContainer>
-                                ) : (
-                                    <div className="h-full flex items-center justify-center text-slate-400">
-                                        No category data available.
-                                    </div>
-                                )}
-                            </div>
-                        </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                            <h4 className="text-sm font-medium text-slate-500 uppercase mb-2">Total Approved Spend</h4>
-                            <div className="text-4xl font-bold text-slate-900">
-                                ${approvedItems.reduce((acc, i) => acc + (i.data.type === 'invoice' ? i.data.grandTotal : i.data.totalAmount), 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                            </div>
-                        </div>
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                            <h4 className="text-sm font-medium text-slate-500 uppercase mb-2">Approved Documents</h4>
-                            <div className="text-4xl font-bold text-emerald-600">
-                                {approvedItems.length}
-                            </div>
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                        <h3 className="text-lg font-bold text-slate-900 mb-4">Monthly Trend</h3>
+                        <div className="h-64 flex items-center justify-center text-slate-400 border-2 border-dashed border-slate-100 rounded-lg">
+                            Chart coming soon...
                         </div>
                     </div>
                 </div>
-            ) : (
-                <>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                            <div className="text-slate-500 text-sm font-medium uppercase tracking-wider">Pending Items</div>
-                            <div className="text-3xl font-bold text-slate-900 mt-2">{pendingItems.length}</div>
-                        </div>
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-                            <div className="text-slate-500 text-sm font-medium uppercase tracking-wider">Pending Value</div>
-                            <div className="text-3xl font-bold text-amix-blue mt-2">${pendingTotal.toFixed(2)}</div>
-                        </div>
-                        <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 bg-gradient-to-br from-amix-navy to-slate-800 text-white">
-                            <div className="text-slate-300 text-sm font-medium uppercase tracking-wider">Action Required</div>
-                            <div className="text-sm mt-2 text-slate-200">
-                                {pendingItems.length > 0 ? "Please review the items below." : "All caught up! No pending approvals."}
+            )}
+
+            {/* TAB: BUDGETS */}
+            {activeTab === 'budgets' && (
+                <div className="space-y-6">
+                    {/* Add Budget Form */}
+                    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                        <h3 className="text-lg font-bold text-slate-900 mb-4">Set Project Budget</h3>
+                        <form onSubmit={handleAddBudget} className="flex gap-4 items-end">
+                            <div className="flex-1">
+                                <label className="block text-xs font-medium text-slate-500 mb-1">Project ID</label>
+                                <input
+                                    type="text"
+                                    value={newBudgetProject}
+                                    onChange={(e) => setNewBudgetProject(e.target.value)}
+                                    placeholder="e.g. P-1001"
+                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amix-blue focus:border-transparent"
+                                />
                             </div>
-                        </div>
+                            <div className="flex-1">
+                                <label className="block text-xs font-medium text-slate-500 mb-1">Budget Amount ($)</label>
+                                <input
+                                    type="number"
+                                    value={newBudgetAmount}
+                                    onChange={(e) => setNewBudgetAmount(e.target.value)}
+                                    placeholder="50000"
+                                    className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-amix-blue focus:border-transparent"
+                                />
+                            </div>
+                            <button
+                                type="submit"
+                                className="px-6 py-2 bg-amix-blue text-white font-bold rounded-lg hover:bg-blue-700 transition"
+                            >
+                                Add Budget
+                            </button>
+                        </form>
                     </div>
 
-                    {/* Bulk Actions Bar */}
-                    {selectedIds.size > 0 && (
-                        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between animate-in fade-in slide-in-from-top-2">
-                            <div className="flex items-center gap-2 text-blue-800 font-medium text-sm">
-                                <span className="bg-blue-200 text-blue-800 px-2 py-0.5 rounded text-xs">{selectedIds.size}</span>
-                                Selected
-                            </div>
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => handleBulkAction('Rejected')}
-                                    className="px-3 py-1.5 text-xs font-medium text-red-700 bg-white border border-red-200 hover:bg-red-50 rounded shadow-sm transition"
-                                >
-                                    Reject Selected
-                                </button>
-                                <button
-                                    onClick={() => handleBulkAction('Approved')}
-                                    className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded shadow-sm transition"
-                                >
-                                    Approve Selected
-                                </button>
-                            </div>
-                        </div>
-                    )}
+                    {/* Budget List */}
+                    <div className="grid grid-cols-1 gap-4">
+                        {budgetDisplay.map((budget) => (
+                            <div key={budget.projectId} className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                                <div className="flex justify-between items-center mb-2">
+                                    <div>
+                                        <h4 className="text-lg font-bold text-slate-900">{budget.projectId}</h4>
+                                        <p className="text-sm text-slate-500">Project Budget</p>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-2xl font-bold text-slate-900">
+                                            ${budget.spentAmount.toLocaleString()} <span className="text-slate-400 text-lg font-normal">/ ${budget.budgetAmount.toLocaleString()}</span>
+                                        </div>
+                                        <div className={`text-sm font-bold ${budget.percent > 90 ? 'text-red-500' : budget.percent > 75 ? 'text-orange-500' : 'text-emerald-500'}`}>
+                                            {budget.percent}% Used
+                                        </div>
+                                    </div>
+                                </div>
 
-                    {pendingItems.length === 0 ? (
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-16 text-center">
-                            <div className="w-20 h-20 bg-green-50 rounded-full flex items-center justify-center mx-auto mb-4 text-green-500">
-                                <Icons.CheckCircle />
+                                {/* Progress Bar */}
+                                <div className="w-full h-4 bg-slate-100 rounded-full overflow-hidden">
+                                    <div
+                                        className={`h-full transition-all duration-1000 ${budget.percent > 90 ? 'bg-red-500' : budget.percent > 75 ? 'bg-orange-500' : 'bg-emerald-500'}`}
+                                        style={{ width: `${budget.percent}%` }}
+                                    ></div>
+                                </div>
                             </div>
-                            <h3 className="text-xl font-medium text-slate-900">All Caught Up!</h3>
-                            <p className="text-slate-500 mt-2">There are no pending invoices or receipts to approve.</p>
-                        </div>
-                    ) : (
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                            <table className="w-full text-left text-sm">
-                                <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-medium uppercase tracking-wider text-xs">
-                                    <tr>
-                                        <th className="p-4 w-8 text-center">
-                                            <input
-                                                type="checkbox"
-                                                className="rounded border-slate-300 text-amix-blue focus:ring-amix-blue cursor-pointer"
-                                                checked={pendingItems.length > 0 && selectedIds.size === pendingItems.length}
-                                                onChange={toggleSelectAll}
-                                            />
-                                        </th>
-                                        <th className="p-4">Status</th>
-                                        <th className="p-4">Type</th>
-                                        <th className="p-4">Date</th>
-                                        <th className="p-4">Vendor / Merchant</th>
-                                        <th className="p-4">Project</th>
-                                        <th className="p-4 text-right">Amount</th>
-                                        <th className="p-4 text-right">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {pendingItems.map(item => {
-                                        const hasRisks = item.data.riskFlags && item.data.riskFlags.length > 0;
-                                        return (
-                                            <tr
-                                                key={item.id}
-                                                onClick={() => onViewItem(item)}
-                                                className={`hover:bg-slate-50 transition cursor-pointer ${selectedIds.has(item.id) ? 'bg-blue-50/30' : ''}`}
-                                            >
-                                                <td className="p-4 text-center" onClick={(e) => e.stopPropagation()}>
-                                                    <input
-                                                        type="checkbox"
-                                                        className="rounded border-slate-300 text-amix-blue focus:ring-amix-blue cursor-pointer"
-                                                        checked={selectedIds.has(item.id)}
-                                                        onChange={() => toggleSelection(item.id)}
-                                                    />
-                                                </td>
-                                                <td className="p-4">
-                                                    {hasRisks && (
-                                                        <div className="group relative flex items-center justify-center w-6 h-6 bg-red-100 text-red-600 rounded-full">
-                                                            <span className="text-xs font-bold">!</span>
-                                                            <div className="absolute left-full ml-2 w-48 p-2 bg-slate-800 text-white text-xs rounded shadow-lg opacity-0 group-hover:opacity-100 transition pointer-events-none z-10">
-                                                                <div className="font-bold mb-1">Risk Detected:</div>
-                                                                <ul className="list-disc pl-3">
-                                                                    {item.data.riskFlags?.map((flag, i) => (
-                                                                        <li key={i}>{flag}</li>
-                                                                    ))}
-                                                                </ul>
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </td>
-                                                <td className="p-4">
-                                                    <span className={`px-2 py-1 rounded text-xs font-medium uppercase 
-                                            ${item.data.type === 'invoice' ? 'bg-purple-100 text-purple-700' : 'bg-orange-100 text-orange-800'}`}>
-                                                        {item.data.type}
-                                                    </span>
-                                                </td>
-                                                <td className="p-4 text-slate-600">
-                                                    {new Date(item.uploadDate).toLocaleDateString()}
-                                                </td>
-                                                <td className="p-4 font-medium text-slate-900">
-                                                    {item.data.type === 'invoice' ? item.data.vendorName : item.data.merchantName}
-                                                </td>
-                                                <td className="p-4 text-slate-600">
-                                                    {item.data.projectNumber || '-'}
-                                                </td>
-                                                <td className="p-4 text-right font-bold text-slate-900">
-                                                    ${item.data.type === 'invoice'
-                                                        ? item.data.grandTotal.toFixed(2)
-                                                        : item.data.totalAmount.toFixed(2)
-                                                    }
-                                                </td>
-                                                <td className="p-4 text-right">
-                                                    <div className="flex items-center justify-end gap-2">
-                                                        <button
-                                                            onClick={(e) => handleAction(e, item.id, 'Rejected')}
-                                                            className="px-3 py-1 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded border border-red-200 transition"
-                                                        >
-                                                            Reject
-                                                        </button>
-                                                        <button
-                                                            onClick={(e) => handleAction(e, item.id, 'Approved')}
-                                                            className="px-3 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded shadow-sm transition"
-                                                        >
-                                                            Approve
-                                                        </button>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        )
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </>
+                        ))}
+
+                        {budgetDisplay.length === 0 && (
+                            <div className="text-center py-12 text-slate-400 bg-white rounded-xl border border-dashed border-slate-200">
+                                No active project budgets. Add one above.
+                            </div>
+                        )}
+                    </div>
+                </div>
             )}
         </div>
     );

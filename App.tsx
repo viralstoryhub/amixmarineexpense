@@ -1,426 +1,330 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Icons } from './constants';
-import InvoiceUploader from './components/InvoiceUploader';
-import InvoiceEditor from './components/InvoiceEditor';
-import ReceiptCapture from './components/ReceiptCapture';
-import ReceiptForm from './components/ReceiptForm';
-import HistoryView from './components/HistoryView';
-import ManagerDashboard from './components/ManagerDashboard';
-import BatchProcessor from './components/BatchProcessor';
-import { ExtractedInvoiceData, ReceiptData, ProcessingStatus, HistoryItem, AppMode } from './types';
 import { extractInvoiceData, extractReceiptData } from './services/geminiService';
 import { StorageService } from './services/storageService';
+import { ExtractedInvoiceData, ReceiptData, ProcessingStatus, AppMode } from './types';
+import InvoiceEditor from './components/InvoiceEditor';
+import ReceiptForm from './components/ReceiptForm';
+import HistoryView from './components/HistoryView';
+import BatchProcessor from './components/BatchProcessor';
+import ManagerDashboard from './components/ManagerDashboard';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import Login from './components/Login';
 
-type AppView = 'dashboard' | 'history' | 'editor' | 'manager' | 'batch';
+// --- MAIN APP COMPONENT ---
+const AppContent: React.FC = () => {
+    const { role, logout } = useAuth();
+    const [mode, setMode] = useState<AppMode>('field'); // Default to field for mobile
+    const [file, setFile] = useState<File | null>(null);
+    const [preview, setPreview] = useState<string | null>(null);
+    const [status, setStatus] = useState<ProcessingStatus>({ step: 'idle' });
+    const [data, setData] = useState<ExtractedInvoiceData | ReceiptData | null>(null);
+    const [view, setView] = useState<'upload' | 'history' | 'batch' | 'manager'>('upload');
 
-const App: React.FC = () => {
-  const [mode, setMode] = useState<AppMode>('office');
-  const [view, setView] = useState<AppView>('dashboard');
-  const [status, setStatus] = useState<ProcessingStatus>({ step: 'idle' });
-  const [file, setFile] = useState<File | null>(null);
-  
-  const [extractedData, setExtractedData] = useState<ExtractedInvoiceData | ReceiptData | null>(null);
-  const [isDuplicate, setIsDuplicate] = useState(false);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [activeMimeType, setActiveMimeType] = useState<string | undefined>(undefined);
-
-  // Helper: Convert File to Base64
-  const fileToBase64 = (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        const result = reader.result as string;
-        const base64 = result.split(',')[1];
-        resolve(base64);
-      };
-      reader.onerror = error => reject(error);
-    });
-  };
-
-  const processFile = async (selectedFile: File): Promise<{data: ExtractedInvoiceData | ReceiptData, base64: string}> => {
-    const base64Data = await fileToBase64(selectedFile);
-    let data;
-    if (mode === 'office') {
-       data = await extractInvoiceData(base64Data, selectedFile.type);
-    } else {
-       data = await extractReceiptData(base64Data, selectedFile.type);
-    }
-    return { data, base64: base64Data };
-  };
-
-  const handleFileSelect = useCallback(async (selectedFiles: File | File[]) => {
-    const files = Array.isArray(selectedFiles) ? selectedFiles : [selectedFiles];
-    if (files.length === 0) return;
-
-    // Case 1: Single File
-    if (files.length === 1) {
-        const selectedFile = files[0];
-        setFile(selectedFile);
-        if (previewUrl) URL.revokeObjectURL(previewUrl);
-        setPreviewUrl(URL.createObjectURL(selectedFile));
-        setActiveMimeType(selectedFile.type);
-        setStatus({ step: 'uploading' });
-        setView('editor');
-
-        try {
-            setStatus({ step: 'analyzing' });
-            const { data, base64 } = await processFile(selectedFile);
-            
-            // Duplicate Check
-            const duplicateFound = StorageService.checkForDuplicate(data);
-            setIsDuplicate(duplicateFound);
-            
-            StorageService.saveInvoice(data as any, selectedFile.name, base64, selectedFile.type);
-            
-            setExtractedData(data);
-            setStatus({ step: 'complete' });
-        } catch (error: any) {
-            console.error(error);
-            setStatus({ step: 'error', message: error.message || "Failed to process file" });
+    // Set initial mode based on role
+    useEffect(() => {
+        if (role === 'manager') {
+            setView('manager');
+            setMode('office');
+        } else {
+            setView('upload');
+            setMode('field');
         }
-    } 
-    // Case 2: Multiple Files
-    else {
-        setStatus({ step: 'batch-processing', batchProgress: { current: 0, total: files.length } });
-        setView('dashboard');
+    }, [role]);
 
-        for (let i = 0; i < files.length; i++) {
-            const currentFile = files[i];
-            try {
-                setStatus({ 
-                    step: 'batch-processing', 
-                    batchProgress: { current: i + 1, total: files.length } 
-                });
-                
-                const { data, base64 } = await processFile(currentFile);
-                StorageService.saveInvoice(data as any, currentFile.name, base64, currentFile.type);
-                
-                // SAFE RATE LIMIT DELAY: 10 seconds
-                if (i < files.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 10000));
-                }
+    if (!role) return <Login />;
 
-            } catch (error) {
-                console.error(`Failed to process ${currentFile.name}`, error);
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0) {
+            const files = Array.from(e.target.files);
+
+            // Case 1: Single File
+            if (files.length === 1) {
+                const selectedFile = files[0];
+                setFile(selectedFile);
+                setPreview(URL.createObjectURL(selectedFile));
+                setStatus({ step: 'uploading', message: 'Analyzing document...' });
+
+                const reader = new FileReader();
+                reader.onloadend = async () => {
+                    const base64String = reader.result as string;
+                    const base64Data = base64String.split(',')[1];
+                    const mimeType = selectedFile.type;
+
+                    try {
+                        setStatus({ step: 'analyzing', message: 'AI is extracting data...' });
+
+                        let result;
+                        if (mode === 'office') {
+                            result = await extractInvoiceData(base64Data, mimeType);
+                        } else {
+                            result = await extractReceiptData(base64Data, mimeType);
+                        }
+
+                        // Check for duplicates
+                        const isDuplicate = StorageService.checkForDuplicate(result);
+                        if (isDuplicate) {
+                            if (!confirm("Warning: This document appears to be a duplicate. Continue?")) {
+                                setStatus({ step: 'idle' });
+                                setFile(null);
+                                setPreview(null);
+                                return;
+                            }
+                        }
+
+                        setData(result);
+                        setStatus({ step: 'complete' });
+                    } catch (error: any) {
+                        console.error(error);
+                        setStatus({ step: 'error', message: error.message || 'Extraction Failed' });
+                    }
+                };
+                reader.readAsDataURL(selectedFile);
+            }
+            // Case 2: Multiple Files (Manual Queue - simplified for demo, usually BatchProcessor handles this)
+            else {
+                alert("Please use 'Batch Upload' mode for multiple files.");
             }
         }
+    };
+
+    const handleSave = (finalData: ExtractedInvoiceData | ReceiptData) => {
+        // If we have a file, we can save the image. 
+        // Note: localStorage has size limits (usually 5MB). 
+        // Saving full images might exceed it quickly. 
+        // For a real app, upload image to S3/Cloud Storage and save URL.
+        // Here we will try to save a small thumbnail or just data if it's too big.
+
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64String = reader.result as string;
+                // Compress or just save data? We'll try saving data + base64 
+                // but catch quota errors in storageService.
+                StorageService.saveInvoice(finalData, file.name, base64String.split(',')[1], file.type);
+                resetForm();
+                setView('history');
+            };
+            reader.readAsDataURL(file);
+        } else {
+            // Saving edited data from history view (no new file)
+            StorageService.saveInvoice(finalData, "Edited_Record", undefined, undefined);
+            resetForm();
+            setView('history');
+        }
+    };
+
+    const resetForm = () => {
+        setFile(null);
+        setPreview(null);
+        setData(null);
         setStatus({ step: 'idle' });
-        alert(`Processed ${files.length} items. See History.`);
-        setView('history');
-    }
-  }, [previewUrl, mode]);
-
-  const handleSave = (data: ExtractedInvoiceData | ReceiptData) => {
-    if (data.id) {
-        StorageService.updateStatus(data.id, 'Pending');
-    }
-    alert(`${mode === 'office' ? 'Invoice' : 'Receipt'} submitted for approval!`);
-    handleCancel();
-  };
-
-  const handleCancel = () => {
-    if (previewUrl && !previewUrl.startsWith('data:')) {
-        URL.revokeObjectURL(previewUrl);
-    }
-    setFile(null);
-    setExtractedData(null);
-    setPreviewUrl(null);
-    setActiveMimeType(undefined);
-    setStatus({ step: 'idle' });
-    setView('dashboard');
-    setIsDuplicate(false);
-  };
-
-  const handleHistorySelect = (item: HistoryItem) => {
-      setExtractedData(item.data);
-      setFile(null);
-      setIsDuplicate(false);
-      
-      if (item.previewImage) {
-          setPreviewUrl(item.previewImage);
-          setActiveMimeType(item.mimeType);
-      } else {
-          setPreviewUrl(null);
-          setActiveMimeType(undefined);
-      }
-      
-      if ((item.data as any).type === 'receipt') {
-          setMode('field');
-      } else {
-          setMode('office');
-      }
-
-      setStatus({ step: 'complete' });
-      setView('editor');
-  };
-
-  const renderPreview = () => {
-    if (!previewUrl) {
-        return (
-            <div className="w-full h-full flex flex-col items-center justify-center bg-slate-100 text-slate-400 p-8 text-center min-h-[200px]">
-                <Icons.FileText />
-                <p className="mt-2 text-sm font-medium">No Preview Available</p>
-            </div>
-        );
-    }
-    
-    const isPdf = activeMimeType === 'application/pdf';
-
-    if (isPdf) {
-      return (
-        <iframe 
-          src={previewUrl} 
-          className="w-full h-full border-none min-h-[300px]"
-          title="PDF Preview"
-        />
-      );
-    }
+    };
 
     return (
-      <img 
-        src={previewUrl} 
-        alt="Preview" 
-        className="w-full h-full object-contain p-4 bg-slate-800"
-      />
-    );
-  };
+        <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
+            {/* Navigation Bar */}
+            <nav className="bg-slate-900 text-white shadow-lg sticky top-0 z-50">
+                <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
+                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => { setView('upload'); resetForm(); }}>
+                        <div className="bg-amix-blue p-1.5 rounded-lg">
+                            <Icons.Boat />
+                        </div>
+                        <div>
+                            <h1 className="font-bold text-lg leading-tight">Amix Marine</h1>
+                            <p className="text-[10px] text-slate-400 uppercase tracking-wider">Expense Tracker</p>
+                        </div>
+                    </div>
 
-  return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
-      {/* Navigation Bar */}
-      <nav className="bg-amix-navy text-white shadow-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => handleCancel()}>
-            <div className="p-2 bg-white/10 rounded-lg">
-               <Icons.Ship />
-            </div>
-            <div>
-                <h1 className="text-lg font-bold tracking-tight leading-tight">Amix Marine</h1>
-                <span className="text-[10px] text-slate-400 block uppercase tracking-wider font-medium">
-                    {mode === 'office' ? 'Invoice Processor' : 'Site Expenses'}
-                </span>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            {view === 'dashboard' && (
-                <div className="hidden md:flex bg-slate-800 rounded-lg p-1">
-                    <button 
-                        onClick={() => setMode('office')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${mode === 'office' ? 'bg-amix-blue text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                    >
-                        Office
-                    </button>
-                    <button 
-                        onClick={() => setMode('field')}
-                        className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${mode === 'field' ? 'bg-amix-orange text-white shadow' : 'text-slate-400 hover:text-white'}`}
-                    >
-                        Field
-                    </button>
-                </div>
-            )}
+                    <div className="flex items-center gap-4">
+                        {/* Role Badge */}
+                        <span className={`hidden md:inline-block px-2 py-1 rounded text-xs font-bold uppercase tracking-wider ${role === 'manager' ? 'bg-purple-500' : 'bg-green-600'}`}>
+                            {role === 'manager' ? 'Manager' : 'Field Staff'}
+                        </span>
 
-            <button 
-                onClick={() => setView('history')}
-                className={`flex items-center gap-2 text-sm font-medium transition-colors ${view === 'history' ? 'text-amix-orange' : 'text-slate-300 hover:text-white'}`}
-            >
-                <Icons.History />
-                <span className="hidden sm:inline">History</span>
-            </button>
+                        <div className="flex bg-slate-800 rounded-lg p-1">
+                            <button
+                                onClick={() => setView('upload')}
+                                className={`p-2 rounded-md transition ${view === 'upload' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                                title="Upload"
+                            >
+                                <Icons.Upload />
+                            </button>
+                            <button
+                                onClick={() => setView('history')}
+                                className={`p-2 rounded-md transition ${view === 'history' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                                title="History"
+                            >
+                                <Icons.History />
+                            </button>
+                            {role === 'manager' && (
+                                <>
+                                    <button
+                                        onClick={() => setView('batch')}
+                                        className={`p-2 rounded-md transition ${view === 'batch' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                                        title="Batch Upload"
+                                    >
+                                        <Icons.Layers />
+                                    </button>
+                                    <button
+                                        onClick={() => setView('manager')}
+                                        className={`p-2 rounded-md transition ${view === 'manager' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'}`}
+                                        title="Manager Dashboard"
+                                    >
+                                        <Icons.Chart />
+                                    </button>
+                                </>
+                            )}
+                        </div>
 
-            <button 
-                onClick={() => setView('batch')}
-                className={`flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-600 transition-colors ${view === 'batch' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
-            >
-                <span>Batch Upload</span>
-            </button>
-
-            <button 
-                onClick={() => setView('manager')}
-                className={`flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-lg border border-slate-600 transition-colors ${view === 'manager' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
-            >
-                <span>Manager</span>
-            </button>
-          </div>
-        </div>
-      </nav>
-
-      {/* Mobile Mode Switcher */}
-      {view === 'dashboard' && (
-        <div className="md:hidden px-4 py-3 bg-white border-b border-slate-200 sticky top-16 z-40">
-             <div className="flex w-full bg-slate-100 rounded-lg p-1">
-                <button 
-                    onClick={() => setMode('office')}
-                    className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${mode === 'office' ? 'bg-white text-amix-navy shadow-sm' : 'text-slate-500'}`}
-                >
-                    Invoices
-                </button>
-                <button 
-                    onClick={() => setMode('field')}
-                    className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${mode === 'field' ? 'bg-amix-orange text-white shadow-sm' : 'text-slate-500'}`}
-                >
-                    Receipts
-                </button>
-            </div>
-        </div>
-      )}
-
-      {/* Main Content */}
-      <main className="flex-1 p-4 md:p-6">
-        <div className="max-w-7xl mx-auto h-full">
-          
-          {/* DASHBOARD */}
-          {view === 'dashboard' && status.step !== 'batch-processing' && (
-            <div className="flex flex-col items-center justify-center h-full min-h-[60vh] space-y-8 animate-fade-in py-8">
-              <div className="text-center space-y-2">
-                <h2 className="text-2xl md:text-3xl font-bold text-slate-900">
-                    {mode === 'office' ? 'Upload Vendor Invoices' : 'Capture Site Receipts'}
-                </h2>
-                <p className="text-slate-500 text-sm md:text-base max-w-md mx-auto">
-                    {mode === 'office' 
-                        ? 'Drop your PDF or Image invoices here. Multiple files supported.'
-                        : 'Take photos of fuel, food, or supply receipts.'}
-                </p>
-              </div>
-              
-              <div className="w-full max-w-xl">
-                {mode === 'office' ? (
-                    <InvoiceUploader onFileSelect={handleFileSelect} isProcessing={false} />
-                ) : (
-                    <ReceiptCapture onFileSelect={(f) => handleFileSelect([f])} isProcessing={false} />
-                )}
-              </div>
-
-              {/* Stats */}
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 w-full max-w-3xl mt-8 md:mt-12">
-                 <div className="bg-white p-3 md:p-4 rounded-lg shadow-sm border border-slate-100 text-center">
-                    <div className="text-xl md:text-2xl font-bold text-amix-blue mb-1">Fast</div>
-                    <div className="text-[10px] md:text-xs text-slate-500 uppercase">Processing</div>
-                 </div>
-                 <div className="bg-white p-3 md:p-4 rounded-lg shadow-sm border border-slate-100 text-center">
-                    <div className="text-xl md:text-2xl font-bold text-emerald-600 mb-1">Batch</div>
-                    <div className="text-[10px] md:text-xs text-slate-500 uppercase">Upload Support</div>
-                 </div>
-                 <div className="hidden md:block bg-white p-4 rounded-lg shadow-sm border border-slate-100 text-center">
-                    <div className="text-2xl font-bold text-amix-orange mb-1">Sync</div>
-                    <div className="text-xs text-slate-500 uppercase">Cloud Storage</div>
-                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* BATCH PROCESSOR */}
-          {view === 'batch' && (
-              <BatchProcessor onClose={() => setView('dashboard')} />
-          )}
-
-          {/* MANAGER */}
-          {view === 'manager' && (
-              <ManagerDashboard onViewItem={handleHistorySelect} />
-          )}
-
-          {/* HISTORY */}
-          {view === 'history' && (
-              <HistoryView onSelectInvoice={handleHistorySelect} />
-          )}
-
-          {/* BATCH LOADING (Simple Loop) */}
-          {status.step === 'batch-processing' && (
-            <div className="flex flex-col items-center justify-center h-[60vh] space-y-6">
-                <div className="text-amix-blue animate-spin">
-                   <Icons.Loader />
-                </div>
-                <div className="text-center px-4">
-                    <h3 className="text-xl font-semibold text-slate-800">
-                        Batch Processing...
-                    </h3>
-                    <p className="text-slate-500 mt-2">
-                        Analyzing document {status.batchProgress?.current} of {status.batchProgress?.total}
-                    </p>
-                    <div className="w-64 h-2 bg-slate-200 rounded-full mt-4 mx-auto overflow-hidden">
-                        <div 
-                            className="h-full bg-amix-blue transition-all duration-500"
-                            style={{ width: `${((status.batchProgress?.current || 0) / (status.batchProgress?.total || 1)) * 100}%` }}
-                        ></div>
+                        <button onClick={logout} className="text-slate-400 hover:text-white transition">
+                            <Icons.LogOut />
+                        </button>
                     </div>
                 </div>
-             </div>
-          )}
+            </nav>
 
-          {/* SINGLE LOADING */}
-          {view === 'editor' && (status.step === 'uploading' || status.step === 'analyzing') && (
-             <div className="flex flex-col items-center justify-center h-[60vh] space-y-6">
-                <div className="text-amix-blue animate-spin">
-                   <Icons.Loader />
-                </div>
-                <div className="text-center px-4">
-                    <h3 className="text-xl font-semibold text-slate-800">
-                        {status.step === 'uploading' ? 'Uploading...' : 'Gemini AI is reading details...'}
-                    </h3>
-                    <p className="text-slate-500 mt-2">
-                        {mode === 'office' ? 'Extracting line items...' : 'Reading total and merchant...'}
-                    </p>
-                </div>
-             </div>
-          )}
+            {/* Main Content Area */}
+            <main className="max-w-5xl mx-auto px-4 py-8">
 
-          {/* ERROR */}
-          {view === 'editor' && status.step === 'error' && (
-             <div className="flex flex-col items-center justify-center h-[60vh] space-y-4 px-4 text-center">
-                <div className="text-red-500">
-                    <Icons.AlertTriangle />
-                </div>
-                <h3 className="text-xl font-semibold text-red-600">Processing Failed</h3>
-                <p className="text-slate-600 max-w-md">{status.message}</p>
-                <button 
-                    onClick={handleCancel}
-                    className="px-6 py-2 bg-slate-200 hover:bg-slate-300 rounded-lg text-slate-800 font-medium transition"
-                >
-                    Try Again
-                </button>
-             </div>
-          )}
+                {/* VIEW: UPLOAD / EDIT */}
+                {view === 'upload' && (
+                    <div className="animate-fade-in">
+                        {!data ? (
+                            <div className="max-w-xl mx-auto">
+                                {/* Mode Switcher */}
+                                <div className="flex bg-white p-1 rounded-xl shadow-sm border border-slate-200 mb-8">
+                                    <button
+                                        onClick={() => setMode('field')}
+                                        className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-medium transition ${mode === 'field' ? 'bg-amix-blue text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                                    >
+                                        <Icons.Receipt />
+                                        Field Receipt
+                                    </button>
+                                    <button
+                                        onClick={() => setMode('office')}
+                                        className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-lg font-medium transition ${mode === 'office' ? 'bg-amix-blue text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+                                    >
+                                        <Icons.FileText />
+                                        Office Invoice
+                                    </button>
+                                </div>
 
-          {/* EDITOR */}
-          {view === 'editor' && status.step === 'complete' && extractedData && (
-             <div className="h-full md:h-[calc(100vh-100px)] flex gap-6 flex-col lg:flex-row">
-                
-                {/* Desktop Preview */}
-                <div className="w-full lg:w-1/3 h-64 lg:h-full bg-slate-200 rounded-xl overflow-hidden relative shadow-inner flex-shrink-0">
-                     {previewUrl && (
-                        <div className="absolute top-4 left-4 bg-black/70 text-white px-3 py-1 rounded-full text-xs font-medium backdrop-blur-sm z-10">
-                            Original
-                        </div>
-                    )}
-                    {renderPreview()}
-                </div>
+                                {/* Upload Box */}
+                                <div className="bg-white border-2 border-dashed border-slate-300 rounded-2xl p-10 text-center hover:border-amix-blue hover:bg-blue-50 transition cursor-pointer relative group">
+                                    <input
+                                        type="file"
+                                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                        onChange={handleFileSelect}
+                                        accept="image/*,application/pdf"
+                                    />
+                                    <div className="w-16 h-16 bg-blue-100 text-amix-blue rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition">
+                                        <Icons.Upload />
+                                    </div>
+                                    <h3 className="text-lg font-bold text-slate-900">Upload {mode === 'field' ? 'Receipt' : 'Invoice'}</h3>
+                                    <p className="text-slate-500 mt-2 text-sm">Take a photo or drag & drop PDF/Image</p>
+                                </div>
 
-                {/* Editor Form */}
-                <div className="flex-1 h-full overflow-hidden">
-                    {mode === 'office' ? (
-                         <InvoiceEditor 
-                            data={extractedData as ExtractedInvoiceData} 
-                            onSave={handleSave as any}
-                            onCancel={handleCancel}
-                            isDuplicate={isDuplicate}
-                        />
-                    ) : (
-                        <ReceiptForm 
-                            data={extractedData as ReceiptData}
-                            onSave={handleSave as any}
-                            onCancel={handleCancel}
-                            isDuplicate={isDuplicate}
-                        />
-                    )}
-                </div>
-             </div>
-          )}
+                                {/* Status Messages */}
+                                {status.step !== 'idle' && (
+                                    <div className="mt-8 text-center">
+                                        {status.step === 'error' ? (
+                                            <div className="bg-red-50 text-red-600 p-4 rounded-xl border border-red-100">
+                                                <p className="font-bold">Processing Failed</p>
+                                                <p className="text-sm mt-1">{status.message}</p>
+                                                <button onClick={resetForm} className="mt-3 px-4 py-2 bg-white border border-red-200 rounded-lg text-sm font-medium shadow-sm hover:bg-red-50">Try Again</button>
+                                            </div>
+                                        ) : (
+                                            <div className="flex flex-col items-center animate-pulse">
+                                                <div className="w-8 h-8 border-4 border-amix-blue border-t-transparent rounded-full animate-spin mb-3"></div>
+                                                <p className="text-slate-600 font-medium">{status.message}</p>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                                {/* Preview Column */}
+                                <div className="hidden lg:block bg-slate-200 rounded-xl overflow-hidden h-[calc(100vh-140px)] sticky top-24">
+                                    {preview && (
+                                        <iframe src={preview} className="w-full h-full object-contain" title="Document Preview" />
+                                    )}
+                                </div>
 
+                                {/* Form Column */}
+                                <div>
+                                    <div className="flex items-center justify-between mb-6">
+                                        <button onClick={resetForm} className="text-slate-500 hover:text-slate-900 flex items-center gap-1 text-sm font-medium">
+                                            <Icons.ArrowLeft /> Back
+                                        </button>
+                                        <h2 className="text-xl font-bold">Review & Save</h2>
+                                    </div>
+
+                                    {mode === 'office' ? (
+                                        <InvoiceEditor
+                                            data={data as ExtractedInvoiceData}
+                                            onSave={handleSave}
+                                            onCancel={resetForm}
+                                        />
+                                    ) : (
+                                        <ReceiptForm
+                                            data={data as ReceiptData}
+                                            onSave={handleSave}
+                                            onCancel={resetForm}
+                                        />
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* VIEW: HISTORY */}
+                {view === 'history' && (
+                    <HistoryView
+                        onEdit={(item) => {
+                            setData(item.data);
+                            setFile(null); // No new file, just editing data
+                            setPreview(item.previewImage || null);
+                            setMode(item.data.type === 'invoice' ? 'office' : 'field');
+                            setView('upload');
+                        }}
+                        onView={(item) => {
+                            // Simple view mode could be implemented, for now re-using edit flow or just showing JSON
+                            console.log("View item", item);
+                        }}
+                    />
+                )}
+
+                {/* VIEW: BATCH */}
+                {view === 'batch' && role === 'manager' && (
+                    <BatchProcessor />
+                )}
+
+                {/* VIEW: MANAGER */}
+                {view === 'manager' && role === 'manager' && (
+                    <ManagerDashboard
+                        onViewItem={(item) => {
+                            setData(item.data);
+                            setPreview(item.previewImage || null);
+                            setMode(item.data.type === 'invoice' ? 'office' : 'field');
+                            setView('upload');
+                        }}
+                    />
+                )}
+
+            </main>
         </div>
-      </main>
-    </div>
-  );
+    );
+};
+
+const App: React.FC = () => {
+    return (
+        <AuthProvider>
+            <AppContent />
+        </AuthProvider>
+    );
 };
 
 export default App;

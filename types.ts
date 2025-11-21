@@ -48,6 +48,14 @@ export interface HistoryItem {
   mimeType?: string; // Mime type for the preview
 }
 
+export interface ProjectBudget {
+  projectId: string;
+  budgetAmount: number;
+  spentAmount: number;
+}
+
+export type CostCodeType = 'Fuel' | 'Labor' | 'Materials' | 'Equipment' | 'Subcontractor' | 'Other';
+
 export interface ProcessingStatus {
   step: 'idle' | 'uploading' | 'analyzing' | 'batch-processing' | 'complete' | 'error';
   message?: string;

@@ -1,4 +1,6 @@
 import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { ExtractedInvoiceData } from '../types';
 
 export const ExcelService = {
@@ -8,7 +10,7 @@ export const ExcelService = {
     const worksheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Invoice Data");
-    
+
     const filename = `${data.vendorName || 'Vendor'} - ${data.invoiceNumber || 'Invoice'}.xlsx`;
     XLSX.writeFile(workbook, filename);
   },
@@ -31,7 +33,7 @@ export const ExcelService = {
       reportRows.push(["VENDOR:", inv.vendorName, "", "DATE:", inv.invoiceDate, "INVOICE #:", inv.invoiceNumber]);
       reportRows.push(["PROJECT:", inv.projectNumber, "", "PO #:", inv.poNumber, "STATUS:", "Processed"]);
       reportRows.push(["", "", "", "SUBTOTAL:", inv.subtotal, "TAX:", inv.taxTotal, "TOTAL:", inv.grandTotal]);
-      
+
       // 2. Line Items Header
       // Indented by one column for visual hierarchy
       reportRows.push([
@@ -78,7 +80,7 @@ export const ExcelService = {
 
     // --- Create Workbook ---
     const workbook = XLSX.utils.book_new();
-    
+
     // "Detailed Report" is the first tab users see
     XLSX.utils.book_append_sheet(workbook, reportSheet, "Detailed Report");
     // "Flat Data" is the second tab for machine processing
@@ -86,6 +88,65 @@ export const ExcelService = {
 
     const dateStr = new Date().toISOString().split('T')[0];
     XLSX.writeFile(workbook, `Amix_Batch_Export_${dateStr}_(${invoices.length}_Docs).xlsx`);
+  },
+
+  // Generate PDF Report with Images
+  generatePdfReport: async (invoices: any[]) => {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.width;
+
+    // Title
+    doc.setFontSize(20);
+    doc.text("Amix Marine Expense Report", 14, 20);
+    doc.setFontSize(10);
+    doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 28);
+    doc.text(`Total Items: ${invoices.length}`, 14, 33);
+
+    let yPos = 45;
+
+    // Summary Table
+    const tableData = invoices.map(inv => [
+      inv.data.date || inv.data.invoiceDate,
+      inv.data.vendorName || inv.data.merchantName,
+      inv.data.projectNumber || '-',
+      `$${(inv.data.grandTotal || inv.data.totalAmount || 0).toFixed(2)}`
+    ]);
+
+    autoTable(doc, {
+      startY: yPos,
+      head: [['Date', 'Vendor', 'Project', 'Amount']],
+      body: tableData,
+      theme: 'striped',
+      headStyles: { fillColor: [41, 128, 185] }
+    });
+
+    // Add Images on subsequent pages
+    invoices.forEach((inv, index) => {
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.text(`Item #${index + 1}: ${inv.data.vendorName || inv.data.merchantName}`, 14, 20);
+
+      doc.setFontSize(10);
+      doc.text(`Date: ${inv.data.date || inv.data.invoiceDate}`, 14, 30);
+      doc.text(`Total: $${(inv.data.grandTotal || inv.data.totalAmount || 0).toFixed(2)}`, 14, 36);
+
+      if (inv.previewImage) {
+        try {
+          // Add image fitting within margins
+          const imgProps = doc.getImageProperties(inv.previewImage);
+          const pdfWidth = pageWidth - 28;
+          const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+          doc.addImage(inv.previewImage, 'JPEG', 14, 45, pdfWidth, pdfHeight);
+        } catch (e) {
+          doc.text("(Image could not be loaded)", 14, 50);
+        }
+      } else {
+        doc.text("(No image attached)", 14, 50);
+      }
+    });
+
+    doc.save(`Amix_Report_${new Date().toISOString().split('T')[0]}.pdf`);
   }
 };
 
