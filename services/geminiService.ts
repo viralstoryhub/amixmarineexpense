@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ExtractedInvoiceData, ReceiptData } from "../types";
 
-const apiKey = process.env.API_KEY;
+const apiKey = "AIzaSyD_LEap3oxQge44mcMrjIEu3uX8AWidhhQ";
 
 // --- INVOICE SCHEMA ---
 const invoiceSchema: Schema = {
@@ -70,7 +70,7 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string): 
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  
+
   const prompt = `
     You are an expert accounts payable AI for 'Amix Marine Projects'.
     Analyze this invoice document.
@@ -90,11 +90,11 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string): 
       model: 'gemini-2.5-flash',
       contents: {
         parts: [
-          { 
-            inlineData: { 
-              mimeType: mimeType, 
-              data: base64Data 
-            } 
+          {
+            inlineData: {
+              mimeType: mimeType,
+              data: base64Data
+            }
           },
           { text: prompt }
         ]
@@ -110,18 +110,18 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string): 
     if (!textResponse) throw new Error("Empty response from AI");
 
     const data = JSON.parse(textResponse);
-    
+
     const enrichedLineItems = (data.lineItems || []).map((item: any) => ({
-        ...item,
-        id: crypto.randomUUID()
+      ...item,
+      id: crypto.randomUUID()
     }));
 
     return {
-        ...data,
-        type: 'invoice',
-        id: crypto.randomUUID(),
-        lineItems: enrichedLineItems,
-        confidenceScore: 95
+      ...data,
+      type: 'invoice',
+      id: crypto.randomUUID(),
+      lineItems: enrichedLineItems,
+      confidenceScore: 95
     };
 
   } catch (error: any) {
@@ -134,7 +134,7 @@ export const extractReceiptData = async (base64Data: string, mimeType: string): 
   if (!apiKey) throw new Error("API Key is missing.");
 
   const ai = new GoogleGenAI({ apiKey });
-  
+
   // STRONGER PROMPT FOR RECEIPTS
   const prompt = `
     You are an expert expense tracker for 'Amix Marine'.
@@ -173,23 +173,23 @@ export const extractReceiptData = async (base64Data: string, mimeType: string): 
     });
 
     const data = JSON.parse(response.text || "{}");
-    
+
     // Add IDs and ensure defaults
     const enrichedLineItems = (data.lineItems || []).map((item: any) => ({
-        ...item,
-        id: crypto.randomUUID(),
-        quantity: item.quantity || 1,
-        unitPrice: item.unitPrice || item.total,
-        isTaxLine: item.isTaxLine || false,
-        // Fallback for missing cost codes
-        costCode: item.costCode || data.costCode || '' 
+      ...item,
+      id: crypto.randomUUID(),
+      quantity: item.quantity || 1,
+      unitPrice: item.unitPrice || item.total,
+      isTaxLine: item.isTaxLine || false,
+      // Fallback for missing cost codes
+      costCode: item.costCode || data.costCode || ''
     }));
 
     return {
-        ...data,
-        type: 'receipt',
-        id: crypto.randomUUID(),
-        lineItems: enrichedLineItems
+      ...data,
+      type: 'receipt',
+      id: crypto.randomUUID(),
+      lineItems: enrichedLineItems
     };
 
   } catch (error: any) {
