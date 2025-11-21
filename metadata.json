@@ -1,0 +1,7 @@
+{
+  "name": "Amix Marine Expenses",
+  "description": "A specialized expense processing platform for Amix Marine Projects. Streamlines invoice ingestion, line-item extraction, tax coding, and project allocation using Gemini AI.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
