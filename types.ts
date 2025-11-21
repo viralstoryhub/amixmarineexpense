@@ -21,6 +21,7 @@ export interface ExtractedInvoiceData {
   taxTotal: number;
   grandTotal: number;
   confidenceScore: number; // 0-100
+  riskFlags?: string[]; // AI detected anomalies
 }
 
 export interface ReceiptData {
@@ -34,6 +35,7 @@ export interface ReceiptData {
   projectNumber: string;
   costCode: string; // Main category fallback
   lineItems: LineItem[]; // Detailed breakdown
+  riskFlags?: string[]; // AI detected anomalies
 }
 
 export interface HistoryItem {

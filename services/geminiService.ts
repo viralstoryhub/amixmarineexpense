@@ -14,7 +14,13 @@ const invoiceSchema: Schema = {
     invoiceDate: { type: Type.STRING, description: "Date of invoice in YYYY-MM-DD format" },
     subtotal: { type: Type.NUMBER, description: "Subtotal before tax" },
     taxTotal: { type: Type.NUMBER, description: "Total tax amount (GST/PST/HST)" },
-    grandTotal: { type: Type.NUMBER, description: "Final total amount" },
+    grandTotal: { type: Type.NUMBER, description: "Total amount including tax" },
+    confidenceScore: { type: Type.NUMBER, description: "Confidence in extraction (0-100)" },
+    riskFlags: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "List of potential issues (e.g. 'High Amount > $1000', 'Alcohol Detected', 'Entertainment')"
+    },
     lineItems: {
       type: Type.ARRAY,
       items: {
@@ -31,7 +37,7 @@ const invoiceSchema: Schema = {
       }
     }
   },
-  required: ["vendorName", "invoiceNumber", "invoiceDate", "subtotal", "taxTotal", "grandTotal", "lineItems"]
+  required: ["vendorName", "invoiceNumber", "invoiceDate", "lineItems", "grandTotal"]
 };
 
 // --- RECEIPT SCHEMA ---
@@ -59,6 +65,11 @@ const receiptSchema: Schema = {
         },
         required: ["description", "total"]
       }
+    },
+    riskFlags: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "List of potential issues (e.g. 'High Amount > $500', 'Alcohol Detected', 'Suspicious Vendor')"
     }
   },
   required: ["merchantName", "date", "totalAmount", "description", "lineItems"]
@@ -81,6 +92,7 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string): 
     3. Suggest Cost Codes.
     4. Identify tax lines.
     5. Ensure math is correct.
+    6. Identify potential anomalies or risks (e.g., unusually high amount, suspicious vendor, missing details).
     
     Return ONLY valid JSON.
   `;
@@ -121,7 +133,7 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string): 
       type: 'invoice',
       id: crypto.randomUUID(),
       lineItems: enrichedLineItems,
-      confidenceScore: 95
+      confidenceScore: data.confidenceScore || 95 // Use extracted confidence or default
     };
 
   } catch (error: any) {
@@ -153,8 +165,14 @@ export const extractReceiptData = async (base64Data: string, mimeType: string): 
     
     If the image is blurry or summarizes multiple items, try your best to separate them.
     
-    Return valid JSON matching the schema.
-  `;
+    5. **Risk Detection**:
+     - Flag if total > $5000.
+     - Flag if "Alcohol", "Beer", "Wine", or "Liquor" is present.
+     - Flag if "Entertainment" or "Party" is mentioned.
+     - Flag if the date is older than 60 days.
+
+  Return valid JSON matching the schema.
+`;
 
   try {
     const response = await ai.models.generateContent({
