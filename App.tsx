@@ -217,12 +217,13 @@ const AppContent: React.FC = () => {
                                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                                         onChange={handleFileSelect}
                                         accept="image/*,application/pdf"
+                                        capture="environment"
                                     />
                                     <div className="w-16 h-16 bg-blue-100 text-amix-blue rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition">
                                         <Icons.Upload />
                                     </div>
                                     <h3 className="text-lg font-bold text-slate-900">Upload {mode === 'field' ? 'Receipt' : 'Invoice'}</h3>
-                                    <p className="text-slate-500 mt-2 text-sm">Take a photo or drag & drop PDF/Image</p>
+                                    <p className="text-slate-500 mt-2 text-sm">Take a photo with your camera or upload a file</p>
                                 </div>
 
                                 {/* Status Messages */}
